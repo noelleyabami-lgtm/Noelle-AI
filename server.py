@@ -6,7 +6,8 @@ from openai import OpenAI
 import json
 import os
 
-client = OpenAI(api_key="OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
 
 app = FastAPI()
 
