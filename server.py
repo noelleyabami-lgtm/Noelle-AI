@@ -1,22 +1,16 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 from openai import OpenAI
+import uvicorn
 import json
 import os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key="OPENAI_API_KEY")
 
 app = FastAPI()
 
-# ====== EVITAR 404 EN RUTA PRINCIPAL ======
-@app.get("/")
-def home():
-    return {"status": "OK", "message": "Servidor funcionando"}
-
-# ==========================================
-
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,42 +19,84 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --------- ARCHIVOS ---------
+USERS_FILE = "users.json"
+
+# --------- MODELOS ---------
+class Register(BaseModel):
+    username: str
+    password: str
+
+class Login(BaseModel):
+    username: str
+    password: str
+
 class Message(BaseModel):
-    message: str
+    username: str
+    text: str
 
-MEMORY_FILE = "memory.json"
+# --------- FUNCIONES ---------
+def load_users():
+    if not os.path.exists(USERS_FILE):
+        return {}
+    with open(USERS_FILE, "r") as f:
+        return json.load(f)
 
-def load_memory():
-    if not os.path.exists(MEMORY_FILE):
-        return []
-    with open(MEMORY_FILE, "r") as f:
-        return json.load(f).get("conversations", [])
+def save_users(users):
+    with open(USERS_FILE, "w") as f:
+        json.dump(users, f, indent=4)
 
-def save_memory(conversations):
-    with open(MEMORY_FILE, "w") as f:
-        json.dump({"conversations": conversations}, f, indent=4)
+# --------- ENDPOINTS ---------
 
+# REGISTRO
+@app.post("/register")
+async def register(data: Register):
+    users = load_users()
+
+    if data.username in users:
+        raise HTTPException(status_code=400, detail="El usuario ya existe.")
+
+    users[data.username] = {
+        "password": data.password,
+        "memory": []
+    }
+    save_users(users)
+
+    return {"message": "Cuenta creada con éxito."}
+
+
+# LOGIN
+@app.post("/login")
+async def login(data: Login):
+    users = load_users()
+
+    if data.username not in users or users[data.username]["password"] != data.password:
+        raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
+
+    return {"message": "Login exitoso."}
+
+
+# CHAT
 @app.post("/chat")
-async def chat(msg: Message):
-    memory = load_memory()
+async def chat(data: Message):
+    users = load_users()
 
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Eres un amigo inteligente, amable y divertido. "
-                "Ayudas con tareas, matemáticas y explicaciones. "
-                "Habla de forma natural sin sonar como robot."
-            )
-        }
-    ]
+    if data.username not in users:
+        raise HTTPException(status_code=401, detail="Usuario no encontrado.")
+
+    # memoria individual del usuario
+    memory = users[data.username]["memory"]
+
+    # construir mensajes del chat
+    messages = [{"role": "system", "content": "Eres un amigo inteligente y divertido."}]
 
     for m in memory:
         messages.append({"role": "user", "content": m["user"]})
         messages.append({"role": "assistant", "content": m["bot"]})
 
-    messages.append({"role": "user", "content": msg.message})
+    messages.append({"role": "user", "content": data.text})
 
+    # llamada al modelo
     response = client.chat.completions.create(
         model="gpt-4.1-mini",
         messages=messages
@@ -68,13 +104,13 @@ async def chat(msg: Message):
 
     bot_reply = response.choices[0].message.content
 
-    memory.append({
-        "user": msg.message,
-        "bot": bot_reply
-    })
-    save_memory(memory)
+    # guardar en memoria del usuario
+    memory.append({"user": data.text, "bot": bot_reply})
+    users[data.username]["memory"] = memory
+    save_users(users)
 
     return {"reply": bot_reply}
 
+
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="0.0.0.0", port=8000)
+    uvicorn.run("server:app", host="0.0.0.0", port=10000)
